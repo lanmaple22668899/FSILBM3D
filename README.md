@@ -80,6 +80,32 @@ per block at a time.
 
 ## Run solver
 
+### Fixed cylinder with half-way bounce-back
+
+`examples/Case4BounceBack/inFlow.dat` configures the Re=100 Case4 cylinder
+with a single MRT fluid block and periodic spanwise faces. Copy it into
+the run directory and create the output folders below.
+
+The optional input section uses the same coordinates and units as the fluid blocks.
+
+```text
+CylinderBounceBack
+ 10.0   0.01   0.5   ! center_x, center_y, radius
+EndCylinderBounceBack
+```
+
+The cylinder is fixed, aligned with the z axis, and spans the entire periodic
+length. Use one fluid block, leave a fluid layer to the x/y faces, set
+`nFish = nfishGroup = 0` and `solidProbingNum = 0`, and set `LrefType = 1`
+with the cylinder diameter as `Lref`. The curved wall is approximated by
+the midpoints of the fluid-to-solid lattice links.
+
+`DatInfo/Cylinder_forces.dat` records `t/Tref Fx Fy Fz Cx Cy Cz` at
+`timeInfoDelta` using momentum exchange. For an x-directed inlet, `Cx` is
+the drag coefficient and `Cy` the lift coefficient. The reference area is
+diameter times periodic span. Start from a fresh flow field with the sample
+input. For continuation, use a checkpoint with the same bounce-back geometry.
+
 ### prepare work direcotry and input files
 
 Copy input parameter file (**inFlow.dat** in examples), body mesh file (**plate.dat** in examples) and create or clean directories bash script (**cleanfiles.sh** in examples) to the work directory.

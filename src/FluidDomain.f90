@@ -15,7 +15,13 @@ module FluidDomain
              write_continue_blocks,streaming_block,computeFieldStat_blocks,clear_volume_force, &
              CompareBlocks,FindCarrierFluidBlock,halfwayBCset_block,write_fluid_flux, &
              distribute_fluid_blocks, write_fluid_probes, LBMBlock
+    public :: read_cylinder_boundary, initialise_cylinder_boundary, write_cylinder_forces
     integer:: m_nblocks, m_npsize
+    logical :: cylinder_enabled = .false.
+    real(8) :: cylinder_xy(2) = 0.d0, cylinder_radius = 0.d0
+    type :: BounceLink
+        integer :: x, y, q
+    end type
     type :: LBMBlock
         integer :: ID,iCollidModel,offsetOutput,outputtype
         integer :: xDim,yDim,zDim
@@ -38,6 +44,10 @@ module FluidDomain
         real(8), allocatable :: tau_Fy1t1(:,:),tau_Fy1t2(:,:),tau_Fy2t1(:,:),tau_Fy2t2(:,:)
         real(8), allocatable :: tau_Fz1t1(:,:),tau_Fz1t2(:,:),tau_Fz2t1(:,:),tau_Fz2t2(:,:)
         real(8), allocatable :: tau_all(:,:,:)
+        logical, allocatable :: cylinder_solid(:,:)
+        type(BounceLink), allocatable :: cylinder_links(:)
+        real(8), allocatable :: cylinder_populations(:,:)
+        real(8) :: cylinder_force(3) = 0.d0
         real(8) :: offsetMoveGrid(1:3),volumeForce(3)
         real(8) :: blktime
         integer, allocatable :: carriedBodies(:) ! 0 is the number of carried bodies
@@ -114,6 +124,117 @@ module FluidDomain
         enddo
         close(111)
     END SUBROUTINE
+
+    subroutine read_cylinder_boundary(filename)
+        use SolidBody, only: m_nFish, m_nGroup
+        use, intrinsic :: ieee_arithmetic, only: ieee_is_finite
+        character(len=40), intent(in) :: filename
+        character(len=40) :: keyword
+        character(len=256) :: buffer
+        integer :: status
+
+        open(unit=111, file=filename, status='old', action='read')
+        keyword = 'CylinderBounceBack'
+        call find_input_keyword(111, keyword, cylinder_enabled, .true.)
+        if (cylinder_enabled) then
+            call readNextData(111, buffer)
+            read(buffer, *, iostat=status) cylinder_xy, cylinder_radius
+            if (status /= 0 .or. .not. all(ieee_is_finite(cylinder_xy)) .or. &
+                .not. ieee_is_finite(cylinder_radius) .or. cylinder_radius <= 0.d0) then
+                call parallel_abort('CylinderBounceBack requires center_x, center_y and a positive radius')
+            endif
+            if (m_nFish /= 0 .or. m_nGroup /= 0 .or. flow%solidProbingNum /= 0) then
+                call parallel_abort('CylinderBounceBack requires zero IBM bodies, groups and solid probes')
+            endif
+            if (m_nblocks /= 1) call parallel_abort('CylinderBounceBack requires a single fluid block')
+            flow%Asfac = 2.d0*cylinder_radius * (LBMblks(1)%zDim*LBMblks(1)%dh)
+        endif
+        close(111)
+    end subroutine
+
+    subroutine initialise_cylinder_boundary()
+        integer :: x, y, q, dx, dy, nlinks, status
+        integer, parameter :: idfile=111
+        real(8) :: dx_center, dy_center, counts(1)
+        logical, allocatable :: solid(:,:)
+
+        if (.not. cylinder_enabled) return
+        if (flow%Uref <= 0.d0 .or. flow%denIn <= 0.d0) then
+            call parallel_abort('CylinderBounceBack requires positive reference velocity and inlet density')
+        endif
+        associate (b => LBMblks(1))
+            if (b%periodic_bc(3) /= 1) call parallel_abort('CylinderBounceBack requires periodic z faces')
+            if (cylinder_xy(1)-cylinder_radius <= b%global_xmin+b%dh .or. &
+                cylinder_xy(1)+cylinder_radius >= b%global_xmin+(b%global_nx-2)*b%dh .or. &
+                cylinder_xy(2)-cylinder_radius <= b%ymin+b%dh .or. &
+                cylinder_xy(2)+cylinder_radius >= b%ymin+(b%yDim-2)*b%dh) then
+                call parallel_abort('CylinderBounceBack requires a fluid layer between the cylinder and the x/y faces')
+            endif
+            ! Evaluate the same geometry in local cells and in the adjacent MPI x planes.
+            allocate(solid(b%yDim,0:b%xDim+1))
+            do x = 0, b%xDim+1
+                dx_center = b%global_xmin + (b%first_x+x-2)*b%dh - cylinder_xy(1)
+                do y = 1, b%yDim
+                    dy_center = b%ymin + (y-1)*b%dh - cylinder_xy(2)
+                    solid(y,x) = dx_center**2 + dy_center**2 <= cylinder_radius**2
+                enddo
+            enddo
+            allocate(b%cylinder_solid(b%yDim,b%xDim))
+            b%cylinder_solid = solid(:,1:b%xDim)
+            nlinks = 0
+            do q = 1, lbmDim
+                dx = ee(q,1)
+                dy = ee(q,2)
+                nlinks = nlinks + count(.not. solid(2:b%yDim-1,1:b%xDim) .and. &
+                                       solid(2+dy:b%yDim-1+dy,1+dx:b%xDim+dx))
+            enddo
+            counts(1) = dble(nlinks)
+            call sum_values(counts)
+            if (counts(1) == 0.d0) call parallel_abort('CylinderBounceBack has no fluid-solid lattice links')
+            allocate(b%cylinder_links(nlinks), b%cylinder_populations(b%zDim,nlinks))
+            nlinks = 0
+            do q = 1, lbmDim
+                dx = ee(q,1)
+                dy = ee(q,2)
+                do x = 1, b%xDim
+                    do y = 2, b%yDim-1
+                        if (solid(y,x) .or. .not. solid(y+dy,x+dx)) cycle
+                        nlinks = nlinks + 1
+                        b%cylinder_links(nlinks) = BounceLink(x,y,q)
+                    enddo
+                enddo
+            enddo
+        end associate
+        if (is_root) then
+            write(*,'(A,3(1X,ES15.7),A,I0)') 'Cylinder half-way bounce-back (x, y, radius):', &
+                cylinder_xy, cylinder_radius, ', cross-section links: ', int(counts(1))
+            if (flow%isConCmpt < 1) then
+                open(idfile, file='./DatInfo/Cylinder_forces.dat', status='replace', iostat=status)
+            else
+                open(idfile, file='./DatInfo/Cylinder_forces.dat', status='unknown', position='append', iostat=status)
+            endif
+            if (status /= 0) call parallel_abort('Cannot open DatInfo/Cylinder_forces.dat')
+            inquire(unit=idfile,size=status)
+            if (status == 0) write(idfile,'(A)') '# t/Tref  Fx  Fy  Fz  Cx  Cy  Cz'
+            close(idfile)
+        endif
+    end subroutine
+
+    subroutine write_cylinder_forces(time)
+        real(8), intent(in) :: time
+        real(8) :: force(3)
+        integer :: status
+        integer, parameter :: idfile=111
+
+        if (.not. cylinder_enabled) return
+        force = LBMblks(1)%cylinder_force
+        call sum_values(force)
+        if (.not. is_root) return
+        open(idfile, file='./DatInfo/Cylinder_forces.dat', status='old', position='append', iostat=status)
+        if (status /= 0) call parallel_abort('Cannot append to DatInfo/Cylinder_forces.dat')
+        write(idfile,'(7(ES23.15,1X))') time/flow%Tref, force, force/flow%Fref
+        close(idfile)
+    end subroutine
 
     logical function owns_x(this, x)
         class(LBMBlock), intent(in) :: this
@@ -1264,6 +1385,13 @@ module FluidDomain
         !$OMP PARALLEL DO SCHEDULE(STATIC) PRIVATE(x,y,z)
         do  x = 1, this%xDim
         do  y = 1, this%yDim
+        if (cylinder_enabled) then
+            if (this%cylinder_solid(y,x)) then
+                this%den(:,y,x) = flow%denIn
+                this%uuu(:,y,x,:) = 0.d0
+                cycle
+            endif
+        endif
         do  z = 1, this%zDim
             this%den(z,y,x  )  = (SUM(this%fIn(z,y,x,0:lbmDim)))
             this%uuu(z,y,x,1)  = (SUM(this%fIn(z,y,x,0:lbmDim)*ee(0:lbmDim,1))+0.5d0*this%volumeForce(1)*this%dh)/this%den(z,y,x)
@@ -1352,6 +1480,9 @@ module FluidDomain
         !$OMP PARALLEL DO SCHEDULE(STATIC) PRIVATE(x,y,z,uSqr,uxyz,fEq,Flb,omega,f_1)
         do    x = 1, this%xDim
         do    y = 1, this%yDim
+        if (cylinder_enabled) then
+            if (this%cylinder_solid(y,x)) cycle
+        endif
         do    z = 1, this%zDim
             uSqr           = sum(this%uuu(z,y,x,1:3)*this%uuu(z,y,x,1:3))
             uxyz(0:lbmDim) = this%uuu(z,y,x,1) * ee(0:lbmDim,1) + this%uuu(z,y,x,2) * ee(0:lbmDim,2)+this%uuu(z,y,x,3) * ee(0:lbmDim,3)
@@ -1655,7 +1786,16 @@ module FluidDomain
     SUBROUTINE streaming_(this)
         implicit none
         class(LBMBlock), intent(inout) :: this
-        integer:: i
+        integer:: i, link, x, y, q
+        if (cylinder_enabled) then
+            ! Save outgoing post-collision populations before the in-place streaming shifts.
+            do link = 1, size(this%cylinder_links)
+                x = this%cylinder_links(link)%x
+                y = this%cylinder_links(link)%y
+                q = this%cylinder_links(link)%q
+                this%cylinder_populations(:,link) = this%fIn(:,y,x,q)
+            enddo
+        endif
         do  i=0,lbmDim
             call swapzy(this%fIn, ee(i,3), ee(i,2), i, this%zDim, this%yDim, this%xDim, lbmDim)
             if (rank_count > 1 .and. ee(i,1) /= 0) then
@@ -1672,6 +1812,18 @@ module FluidDomain
                 if (ee(i,1) == -1) this%fIn(:,:,this%xDim,i) = this%receive_plane
             endif
         enddo
+        if (cylinder_enabled) then
+            this%cylinder_force = 0.d0
+            do link = 1, size(this%cylinder_links)
+                x = this%cylinder_links(link)%x
+                y = this%cylinder_links(link)%y
+                q = this%cylinder_links(link)%q
+                this%fIn(:,y,x,oppo(q)) = this%cylinder_populations(:,link)
+                this%cylinder_force = this%cylinder_force + sum(this%cylinder_populations(:,link))*ee(q,:)
+            enddo
+            ! Convert the reflected momentum per cell to force using cell volume / time step.
+            this%cylinder_force = this%cylinder_force * (2.d0*this%dh**2)
+        endif
 
         contains
 

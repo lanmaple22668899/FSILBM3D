@@ -40,6 +40,7 @@ PROGRAM main
     !==================================================================================================
     ! Allocate the memory for simulation
     call allocate_solid_memory(flow%Asfac,flow%Lchod,flow%Lspan,flow%AR)
+    call read_cylinder_boundary(parameterFile)
     !==================================================================================================
     ! Calculate all the reference values
     call calculate_reference_params(flow)
@@ -50,6 +51,7 @@ PROGRAM main
     call Initialise_solid_bodies(0.d0)
     call FindCarrierFluidBlock()
     call distribute_fluid_blocks()
+    call initialise_cylinder_boundary()
     call allocate_fuild_memory_blocks(flow%npsize)
     call initialise_fuild_blocks(time)
     !==================================================================================================
@@ -139,6 +141,7 @@ PROGRAM main
         endif
         ! write processing informations
         if(DABS(time/flow%Tref-flow%timeInfoDelta*dble(NINT(time/flow%Tref/flow%timeInfoDelta))) <= 0.5d0*dt_fluid/flow%Tref)then
+            call write_cylinder_forces(time)
             call write_fluid_flux(blockTreeRoot,time)
             if(flow%inWhichBlock.ge.1 .and. flow%inWhichBlock.le.m_nblocks) then
                 call write_fluid_probes(flow%inWhichBlock,time)

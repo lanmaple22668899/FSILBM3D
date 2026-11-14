@@ -54,24 +54,36 @@
     ! Found keyword in inflow.dat for next parameters read
     SUBROUTINE found_keyword(fileID,keyword)
         implicit none
-        integer:: fileID, IOstatus
+        integer:: fileID
         character(LEN=40) :: keyword
+        logical :: found
+        call find_input_keyword(fileID,keyword,found,.false.)
+        if (.not. found) then
+            write(*,*) trim(keyword)//' is not found in inFlow.dat'
+            stop
+        endif
+    END SUBROUTINE
+
+    SUBROUTINE find_input_keyword(fileID,keyword,found,exact)
+        implicit none
+        integer,intent(in):: fileID
+        integer:: IOstatus
+        character(LEN=40),intent(inout) :: keyword
+        logical,intent(out) :: found
+        logical,intent(in) :: exact
         character(len=50) :: readString
         readString = 'null'
         IOstatus = 0
         call to_lowercase(keyword)
         do while(IOstatus.eq.0)
             read(fileID, *, IOSTAT=IOstatus) readString
+            if (IOstatus /= 0) exit
             call to_lowercase(readString)
             readString = adjustl(readString)
-            if (index(readString, keyword) .GT. 0) then
-                exit
-            endif
+            if (readString == keyword) exit
+            if (.not. exact .and. index(readString,keyword) > 0) exit
         enddo
-        if (index(readString, keyword) .EQ. 0) then
-            write(*,*) trim(keyword)//' is not found in inFlow.dat'
-            stop
-        endif
+        found = IOstatus == 0
     END SUBROUTINE
 
     ! Convert an uppercase string to lowercase

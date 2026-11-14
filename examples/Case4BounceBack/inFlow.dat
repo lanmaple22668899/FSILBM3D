@@ -1,0 +1,48 @@
+# Case4, Re=100, fixed cylinder with half-way bounce-back.
+# Cylinder center (10, 0.01), diameter 1, z-periodic span 1.
+Parallel
+ 1   ! OpenMP threads per rank
+EndParallel
+FlowCondition
+ 0  1   ! fresh start, solid substeps
+ 400.0  50.0   ! end time / Tref, checkpoint interval / Tref
+ 0.0  400.0   ! field output time window
+ 20.0D+0   100.0D+0   0.05D+0
+ 100.0D+0   1.0D+0
+ 0.10D+0   0.0D+0   0.0D+0
+ 0.0D+0   0.0D+0   0.0D+0   0
+ 0.0D+0   0.0D+0   0.0D+0
+ 0.0D+0   0.0D+0   0.0D+0
+ 1  1.0   ! LrefType and Lref
+ 0  10.0  ! TrefType and Tref
+ 0   0.10D+0
+ 100  1.0D-4
+ 1
+ENDFlowCondition
+FluidBlocks
+ 1
+ 1   3   0   1
+ 876   626   25
+ 0.040D+0   -6.000D+0   -12.500D+0   0.000D+0
+ 101   103   101   101   301   301
+ 0.25D+0   0   0   0   0   0   0   0   0   0
+ENDFluidBlocks
+CylinderBounceBack
+ 10.0   0.01   0.5
+EndCylinderBounceBack
+SolidBody
+ 1.0D+0   0.0D+0
+ 0.5D+0   0.25D+0
+ 0.0D+0   0.0D+0
+ 1.0D-8   50
+ 0  0  1
+ENDSolidBody
+ProbingFluid
+ 4   1
+ 1.0D+0   0.05D+0   0.5D+0
+ 2.0D+0   0.05D+0   0.5D+0
+ 4.0D+0   0.05D+0   0.5D+0
+ 8.0D+0   0.05D+0   0.5D+0
+ProbingSolid
+ 0
+ENDProbing
