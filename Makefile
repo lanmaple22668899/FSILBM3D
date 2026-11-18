@@ -43,11 +43,16 @@ OBJ = $(addprefix $(OBJDIR)/,ConstParams.o ParallelDomain.o FlowCondition.o Soli
 #-----------------------------------------------------------------------
 # Normally no need to change anything below
 
-.PHONY: all clean FORCE
+.PHONY: all clean FORCE ibm-force-balance
 all: $(TARGET)
 
 $(TARGET): $(OBJ) FORCE
 	$(FC) -o $@ $(FFLAGS) $(OBJ)
+
+ibm-force-balance: $(OBJDIR)/ibm_force_balance
+
+$(OBJDIR)/ibm_force_balance: tests/ibm_force_balance.f90 $(filter-out $(OBJDIR)/main.o,$(OBJ))
+	$(FC) $(FFLAGS) -I$(OBJDIR) -o $@ $^
 
 $(OBJDIR):
 	mkdir -p $@

@@ -590,11 +590,12 @@ module SolidBody
         enddo
     end subroutine
 
-    subroutine FSInteraction_force(bodies,dt,dh,xmin,ymin,zmin,xDim,yDim,zDim,global_nx,first_x,uuu,force)
+    subroutine FSInteraction_force(bodies,dt,dh,xmin,ymin,zmin,xDim,yDim,zDim,global_nx,first_x,den,uuu,force)
         implicit none
         integer,intent(in):: bodies(0:m_nFish)
         real(8),intent(in):: dt,dh,xmin,ymin,zmin
         integer,intent(in):: xDim,yDim,zDim,global_nx,first_x
+        real(8),intent(in):: den(zDim,yDim,xDim)
         real(8),intent(inout)::uuu(zDim,yDim,xDim,1:3)
         real(8),intent(inout)::force(zDim,yDim,xDim,1:3)
         integer :: i,iFish
@@ -602,7 +603,7 @@ module SolidBody
             iFish = bodies(i)
             call VBodies(iFish)%UpdatePosVelArea()
         enddo
-        call calculate_interaction_force(bodies,dt,dh,xmin,ymin,zmin,xDim,yDim,zDim,global_nx,first_x,uuu,force)
+        call calculate_interaction_force(bodies,dt,dh,xmin,ymin,zmin,xDim,yDim,zDim,global_nx,first_x,den,uuu,force)
     end subroutine
 
     subroutine PlateUpdatePosVelArea_(this)
@@ -870,12 +871,13 @@ module SolidBody
         END SUBROUTINE trimedindex
     end subroutine UpdateElmtInterp_
 
-    SUBROUTINE calculate_interaction_force(bodies,dt,dh,xmin,ymin,zmin,xDim,yDim,zDim,global_nx,first_x,uuu,force)
+    SUBROUTINE calculate_interaction_force(bodies,dt,dh,xmin,ymin,zmin,xDim,yDim,zDim,global_nx,first_x,den,uuu,force)
         ! calculate elements interaction force using IB method
         IMPLICIT NONE
         integer,intent(in):: bodies(0:m_nFish)
         real(8),intent(in):: dt,dh,xmin,ymin,zmin
         integer,intent(in):: xDim,yDim,zDim,global_nx,first_x
+        real(8),intent(in):: den(zDim,yDim,xDim)
         real(8),intent(inout)::uuu(zDim,yDim,xDim,1:3)
         real(8),intent(inout)::force(zDim,yDim,xDim,1:3)
         !================================
@@ -901,7 +903,7 @@ module SolidBody
                 dsum=0.0d0
                 do i = 1, bodies(0)
                     iFish = bodies(i)
-                    call VBodies(iFish)%PenaltyForce(dt,dh,xDim,yDim,zDim,first_x,tol,ntol,uuu)
+                    call VBodies(iFish)%PenaltyForce(dt,dh,xDim,yDim,zDim,first_x,tol,ntol,den,uuu)
                     dmaxLBM = dmaxLBM + tol
                     dsum = dsum + ntol
                 enddo
@@ -983,23 +985,24 @@ module SolidBody
         enddo
     END SUBROUTINE FluidVolumeForce_
 
-    SUBROUTINE PenaltyForce_(this,dt,dh,xDim,yDim,zDim,first_x,tolerance,ntolsum,uuu)
+    SUBROUTINE PenaltyForce_(this,dt,dh,xDim,yDim,zDim,first_x,tolerance,ntolsum,den,uuu)
         USE, INTRINSIC :: IEEE_ARITHMETIC
         IMPLICIT NONE
         real(8),intent(in):: dt,dh
         integer,intent(in):: xDim,yDim,zDim,first_x
+        real(8),intent(in):: den(zDim,yDim,xDim)
         real(8),intent(inout)::uuu(zDim,yDim,xDim,1:3)
         class(VirtualBody), intent(inout) :: this
         real(8),intent(out)::tolerance, ntolsum
         !======================================================
         integer:: ix(-1:2),jy(-1:2),kz(-1:2)
         real(8):: rx(-1:2),ry(-1:2),rz(-1:2),forcetemp(1:3)
-        real(8):: velElemIB(3),forceElemTemp(this%v_nelmts,3),invh3
+        real(8):: velElemIB(3),forceElemTemp(this%v_nelmts,3),halfStepPerVolume,weightOverDensity
         real(8):: interpolated(3,this%v_nelmts)
         !======================================================
         integer:: x,y,z,iEL
         !======================================================
-        invh3 = 0.5d0*dt*(1.d0/dh)**3/m_denIn
+        halfStepPerVolume = 0.5d0*dt*(1.d0/dh)**3
         tolerance = 0.d0
         ntolsum = dble(this%v_nelmts)
         ! compute the velocity of IB nodes at element center
@@ -1036,7 +1039,7 @@ module SolidBody
             !endif
             tolerance = tolerance + dabs(velElemIB(1)) + dabs(velElemIB(2)) + dabs(velElemIB(3))
             this%v_Eforce(1:3,iEL) = this%v_Eforce(1:3,iEL) + forceTemp
-            forceElemTemp(iEL,1:3) = forceTemp * invh3
+            forceElemTemp(iEL,1:3) = forceTemp * halfStepPerVolume
         enddo
         !$OMP END PARALLEL DO
         if (.not. IEEE_IS_FINITE(tolerance)) then
@@ -1055,7 +1058,9 @@ module SolidBody
                 if (ix(x) < 1 .or. ix(x) > xDim) cycle
                 do y=-1,2
                     do z=-1,2
-                        uuu(kz(z),jy(y),ix(x),1:3) = uuu(kz(z),jy(y),ix(x),1:3) - forceElemTemp(iEL,1:3)*rx(x)*ry(y)*rz(z)
+                        ! Guo half-step: rho(x) * delta_u(x) = dt * delta_force(x) / 2.
+                        weightOverDensity = rx(x)*ry(y)*rz(z) / den(kz(z),jy(y),ix(x))
+                        uuu(kz(z),jy(y),ix(x),1:3) = uuu(kz(z),jy(y),ix(x),1:3) - forceElemTemp(iEL,1:3)*weightOverDensity
                     enddo
                 enddo
             enddo

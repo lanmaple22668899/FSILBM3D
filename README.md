@@ -401,6 +401,21 @@ $PBS_WDIR/$PBS_ENAME
    - *E_v* : Kinetic energy
    - *E_tot* : total energy calculated by (*E_p* + *E_w*)
 3. *forces.dat* : The hydrodynamic forces exerted on the bodies
+
+   Columns 4–6 of `GroupNNN_forces.dat` contain the Cartesian components
+   divided by the run's `Fref` in `Check.dat`. For a fixed circular cylinder
+   with inflow along $x$ and axis along $z$, multiply columns 4 and 5 by
+   $F_{\rm ref}/(\tfrac12\rho_\infty U_\infty^2 D L_z)$ to obtain drag and
+   lift coefficients. Use the full modeled span $L_z$ in the mesh's length
+   units. For a spanwise-periodic block filling the cylinder span this is
+   $N_z\Delta z$.
+
+   For the Case4 line mesh extruded in $z$, the default reference measure
+   is the sum of the original cross-section segment lengths. The IBM load
+   already includes the full extruded span. For a single regular $N$-sided
+   cylinder with vertex diameter $D$, this gives the multiplier
+   $N\sin(\pi/N)/L_z$ when the reference and inflow speeds agree.
+
 4. *firstNode.dat* : The information of the first point of the bodies 
 5. *centerNode.dat.dat* : The information of the center point of the bodies 
 6. *lastNode.dat* : The information of the last point of the bodies 
