@@ -1,0 +1,87 @@
+--- a/src/LBMBlockComm.f90
++++ b/src/LBMBlockComm.f90
+@@ -312 +312,2 @@
+-                    LBMblks(s)%blktime = LBMblks(s)%blktime + dble(n_timeStep) * LBMblks(s)%dh
++                    LBMblks(s)%blktime = LBMblks(treenode)%blktime - &
++                        dble(m_gridDelta - 1 - n_timeStep) * LBMblks(s)%dh
+@@ -331 +332 @@
+-                                     b%xDim,b%yDim,b%zDim,b%global_nx,b%first_x,b%den,b%uuu,b%force)
++                                     b%xDim,b%yDim,b%zDim,b%global_nx,b%first_x,b%den,b%uuu,b%force,time)
+--- a/src/Solidbody.f90
++++ b/src/Solidbody.f90
+@@ -593 +593 @@
+-    subroutine FSInteraction_force(bodies,dt,dh,xmin,ymin,zmin,xDim,yDim,zDim,global_nx,first_x,den,uuu,force)
++    subroutine FSInteraction_force(bodies,dt,dh,xmin,ymin,zmin,xDim,yDim,zDim,global_nx,first_x,den,uuu,force,time)
+@@ -596,0 +597 @@
++        real(8),intent(in),optional:: time
+@@ -606 +607 @@
+-        call calculate_interaction_force(bodies,dt,dh,xmin,ymin,zmin,xDim,yDim,zDim,global_nx,first_x,den,uuu,force)
++        call calculate_interaction_force(bodies,dt,dh,xmin,ymin,zmin,xDim,yDim,zDim,global_nx,first_x,den,uuu,force,time)
+@@ -874 +875 @@
+-    SUBROUTINE calculate_interaction_force(bodies,dt,dh,xmin,ymin,zmin,xDim,yDim,zDim,global_nx,first_x,den,uuu,force)
++    SUBROUTINE calculate_interaction_force(bodies,dt,dh,xmin,ymin,zmin,xDim,yDim,zDim,global_nx,first_x,den,uuu,force,time)
+@@ -878,0 +880 @@
++        real(8),intent(in),optional:: time
+@@ -887,0 +890,3 @@
++        real(8):: diagForce(3),diagPrevious(3),diagIncrement
++        integer,save:: diagCall=0
++        integer:: diagMet,diagCap
+@@ -900,0 +906,2 @@
++            diagForce=0.d0
++            diagIncrement=0.d0
+@@ -912 +919,33 @@
+-            enddo
++                if (is_root .and. present(time)) then
++                    ! Read-only reduction of the accumulated solid reaction.
++                    diagPrevious=diagForce
++                    diagForce=0.d0
++                    do i=1,bodies(0)
++                        iFish=bodies(i)
++                        diagForce=diagForce+sum(VBodies(iFish)%v_Eforce,dim=2)
++                    enddo
++                    diagIncrement=sqrt(sum((diagForce-diagPrevious)**2))/m_Fref
++                endif
++            enddo
++            if (is_root .and. present(time)) then
++                diagCall=diagCall+1
++                diagMet=0
++                if(dmaxLBM<=m_dtolLBM) diagMet=1
++                diagCap=0
++                if(iterLBM>=m_ntolLBM .and. diagMet==0) diagCap=1
++                if(diagCall==1) then
++                    open(198,file='./DatInfo/IBM_iterations.csv',status='new',action='write')
++                    write(198,'(A)') 't_star,call,iterations,mean_L1_pre_over_U,tolerance,tolerance_met,hit_cap,last_dF_over_Fref,Fx_over_Fref,Fy_over_Fref,Fz_over_Fref'
++                    close(198)
++                endif
++                open(198,file='./DatInfo/IBM_iterations.csv',status='old',position='append',action='write')
++                write(198,'(ES24.15E3,2(A,I0),2(A,ES24.15E3),2(A,I0),4(A,ES24.15E3))') &
++                    time/m_Tref,',',diagCall,',',iterLBM,',',dmaxLBM,',',m_dtolLBM, &
++                    ',',diagMet,',',diagCap,',',diagIncrement,',',diagForce(1)/m_Fref, &
++                    ',',diagForce(2)/m_Fref,',',diagForce(3)/m_Fref
++                close(198)
++                if(diagCap==1 .and. (diagCall==1 .or. mod(diagCall,1000)==0)) then
++                    write(*,'(A,I0,A,ES12.4,A,ES12.4)') 'IBM_CAP iterations=',iterLBM, &
++                        ' mean_L1_pre_over_U=',dmaxLBM,' last_dC_norm=',diagIncrement
++                endif
++            endif
+@@ -1031 +1070 @@
+-        !$OMP PARALLEL DO SCHEDULE(STATIC) PRIVATE(iEL,velElemIB,forceTemp) REDUCTION(+:tolerance)
++        !$OMP PARALLEL DO SCHEDULE(STATIC) PRIVATE(iEL,velElemIB,forceTemp)
+@@ -1040 +1079 @@
+-            tolerance = tolerance + dabs(velElemIB(1)) + dabs(velElemIB(2)) + dabs(velElemIB(3))
++            interpolated(:,iEL) = abs(velElemIB)
+@@ -1044,0 +1084,2 @@
++        ! Use the same summation order for the stopping decision on every rank.
++        tolerance = sum(interpolated)
+--- a/src/main.f90
++++ b/src/main.f90
+@@ -104 +104 @@
+-        LBMblks(:)%blktime = time
++        LBMblks(blockTreeRoot)%blktime = time
+@@ -124,2 +124,4 @@
+-        if(DABS(time/flow%Tref-flow%timeContiDelta*dble(NINT(time/flow%Tref/flow%timeContiDelta))) <= 0.5d0*dt_fluid/flow%Tref)then
+-            call write_continue_blocks(step,time / flow%Tref)   ! output dimensionless time
++        if (flow%timeContiDelta > 0.0d0) then
++            if(DABS(time/flow%Tref-flow%timeContiDelta*dble(NINT(time/flow%Tref/flow%timeContiDelta))) <= 0.5d0*dt_fluid/flow%Tref)then
++                call write_continue_blocks(step,time / flow%Tref)   ! output dimensionless time
++            endif
