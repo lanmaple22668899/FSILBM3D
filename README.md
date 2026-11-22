@@ -86,6 +86,10 @@ per block at a time.
 with a single MRT fluid block and periodic spanwise faces. Copy it into
 the run directory and create the output folders below.
 
+`examples/Case4BounceBack64` follows SCNet Case4 job 127887270 with three
+SRT grid levels and a 64-core Slurm allocation (two nodes, four MPI ranks
+and 16 OpenMP threads per rank).
+
 The optional input section uses the same coordinates and units as the fluid blocks.
 
 ```text
@@ -95,16 +99,49 @@ EndCylinderBounceBack
 ```
 
 The cylinder is fixed, aligned with the z axis, and spans the entire periodic
-length. Use one fluid block, leave a fluid layer to the x/y faces, set
+length. With nested refinement, enclose the cylinder in every block, use
+the same periodic span, and keep the cylinder clear of all coupling planes.
+Set
 `nFish = nfishGroup = 0` and `solidProbingNum = 0`, and set `LrefType = 1`
 with the cylinder diameter as `Lref`. The curved wall is approximated by
 the midpoints of the fluid-to-solid lattice links.
 
 `DatInfo/Cylinder_forces.dat` records `t/Tref Fx Fy Fz Cx Cy Cz` at
-`timeInfoDelta` using momentum exchange. For an x-directed inlet, `Cx` is
+`timeInfoDelta` using momentum exchange from the final substep of the finest
+block. For an x-directed inlet, `Cx` is
 the drag coefficient and `Cy` the lift coefficient. The reference area is
 diameter times periodic span. Start from a fresh flow field with the sample
 input. For continuation, use a checkpoint with the same bounce-back geometry.
+
+### Case4 with Yang (2018) boundary conditions
+
+`examples/Case4Yang2018/inFlow.dat` keeps the Re=100 Case4 domain and the three
+SRT grid spacings `0.100D`, `0.050D`, and `0.025D`. Its outer face codes, in
+`xmin xmax ymin ymax zmin zmax` order, are `101 105 106 106 301 301`.
+
+- `101` prescribes uniform streamwise velocity using equilibrium populations.
+- `105` advances each outlet velocity component with the explicit upwind
+  discretization of `du/dt + U_in du/dx = 0`. Density uses the same update as
+  a closure. Populations combine the target equilibrium with the adjacent
+  interior non-equilibrium part at the new time.
+- `106` copies the complete adjacent interior state to each y face, so the
+  one-cell normal difference is zero for all velocity components. The
+  outlet corners also satisfy the y-face condition.
+- `301` retains the periodic span `Lz = D` on all three blocks. The x and y
+  faces of the two finer blocks exchange populations with their parent.
+- `CylinderBouzidi` takes the same three geometry values as
+  `CylinderBounceBack`. It applies interpolated bounce-back using the
+  fluid-to-cylinder intersection on each link. Force uses the outgoing and
+  interpolated reflected populations on the finest block.
+
+The in-plane boundary conditions follow section 2.2.1 of [Yang's thesis](https://vtechworks.lib.vt.edu/items/ef7f8162-80ba-48fe-b5a2-930408156196).
+The example retains Case4's D3Q19 lattice and computational domain. Start from
+uniform flow with the supplied input, or continue from a checkpoint created
+with the same boundary and cylinder settings.
+
+Build with `make MPI=1`. Copy the example's `inFlow.dat` to the run directory,
+create `DatBodySpan`, `DatInfo`, `DatBody`, `DatFlow`, and `DatContinue` there,
+then launch `FSILBM3D_mpi` with four MPI ranks and 16 OpenMP threads per rank.
 
 ### prepare work direcotry and input files
 

@@ -309,7 +309,8 @@ module LBMBlockComm
             do i=1,blockTree(treenode)%nsons
                 s = blockTree(treenode)%sons(i)
                 do n_timeStep=0,m_gridDelta-1! one divides intwo
-                    LBMblks(s)%blktime = LBMblks(s)%blktime + dble(n_timeStep) * LBMblks(s)%dh
+                    LBMblks(s)%blktime = LBMblks(treenode)%blktime - &
+                        dble(m_gridDelta - 1 - n_timeStep) * LBMblks(s)%dh
                     call tree_collision_streaming_IBM_FEM(s,time_collision,time_streaming,time_IBM,time_FEM)
                     call interpolation_father_to_son(blockTree(treenode)%comm(i),n_timeStep)
                 enddo

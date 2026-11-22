@@ -18,9 +18,12 @@ module FluidDomain
     public :: read_cylinder_boundary, initialise_cylinder_boundary, write_cylinder_forces
     integer:: m_nblocks, m_npsize
     logical :: cylinder_enabled = .false.
+    logical :: cylinder_bouzidi = .false.
+    integer :: cylinder_force_block = 0
     real(8) :: cylinder_xy(2) = 0.d0, cylinder_radius = 0.d0
     type :: BounceLink
         integer :: x, y, q
+        real(8) :: fraction
     end type
     type :: LBMBlock
         integer :: ID,iCollidModel,offsetOutput,outputtype
@@ -29,6 +32,7 @@ module FluidDomain
         real(8) :: global_xmin
         real(8) :: dh,xmin,ymin,zmin,xmax,ymax,zmax
         integer :: BndConds(1:6),periodic_bc(3)
+        logical :: convective_channel = .false.
         real(8) :: params(1:10),tau,Omega,Omega2 ! single time, two time relaxation
         real(8) :: M_COLLID(0:lbmDim,0:lbmDim),M_FORCE(0:lbmDim,0:lbmDim) ! multiple time relaxation
         integer, allocatable :: OMPpartition(:),OMPparindex(:),OMPeid(:)
@@ -47,6 +51,7 @@ module FluidDomain
         logical, allocatable :: cylinder_solid(:,:)
         type(BounceLink), allocatable :: cylinder_links(:)
         real(8), allocatable :: cylinder_populations(:,:)
+        real(8), allocatable :: cylinder_reflected(:,:)
         real(8) :: cylinder_force(3) = 0.d0
         real(8) :: offsetMoveGrid(1:3),volumeForce(3)
         real(8) :: blktime
@@ -105,6 +110,23 @@ module FluidDomain
                 write(*,*) "Grid number exceeds 32767, please try to reduced the grid size."
                 stop
             endif
+            associate (b => LBMblks(iblock))
+                if (any(b%BndConds == BCConvectiveOutlet .or. b%BndConds == BCZeroVelocityGradient)) then
+                    if (any(b%BndConds /= [BCEq_DirecletU, BCConvectiveOutlet, BCZeroVelocityGradient, &
+                                           BCZeroVelocityGradient, BCPeriodic, BCPeriodic])) then
+                        call parallel_abort('105/106 require boundary conditions 101 105 106 106 301 301')
+                    endif
+                    if (b%xDim < 3 .or. b%yDim < 3) call parallel_abort('105/106 require interior x and y nodes')
+                    if (flow%velocityKind /= 0 .or. any(flow%shearRateIn /= 0.d0) .or. &
+                        any(flow%uvwIn(2:3) /= 0.d0) .or. .not. (flow%uvwIn(1) > 0.d0 .and. flow%uvwIn(1) <= 1.d0)) then
+                        call parallel_abort('105/106 require uniform streamwise inflow with 0 < U_in <= 1 in lattice units')
+                    endif
+                    if (any(flow%volumeForceIn /= 0.d0) .or. flow%volumeForceAmp /= 0.d0) then
+                        call parallel_abort('105/106 require zero imposed volume force')
+                    endif
+                    b%convective_channel = .true.
+                endif
+            end associate
             call LBMblks(iblock)%check_periodic_boundary()
             ! calculate the maximum coordinates
             LBMblks(iblock)%xmax = LBMblks(iblock)%xmin + LBMblks(iblock)%dh*(LBMblks(iblock)%xDim-1)
@@ -136,78 +158,121 @@ module FluidDomain
         open(unit=111, file=filename, status='old', action='read')
         keyword = 'CylinderBounceBack'
         call find_input_keyword(111, keyword, cylinder_enabled, .true.)
+        if (.not. cylinder_enabled) then
+            rewind(111)
+            keyword = 'CylinderBouzidi'
+            call find_input_keyword(111, keyword, cylinder_bouzidi, .true.)
+            cylinder_enabled = cylinder_bouzidi
+        endif
         if (cylinder_enabled) then
             call readNextData(111, buffer)
             read(buffer, *, iostat=status) cylinder_xy, cylinder_radius
             if (status /= 0 .or. .not. all(ieee_is_finite(cylinder_xy)) .or. &
                 .not. ieee_is_finite(cylinder_radius) .or. cylinder_radius <= 0.d0) then
-                call parallel_abort('CylinderBounceBack requires center_x, center_y and a positive radius')
+                call parallel_abort('Fixed cylinder requires center_x, center_y and a positive radius')
             endif
             if (m_nFish /= 0 .or. m_nGroup /= 0 .or. flow%solidProbingNum /= 0) then
-                call parallel_abort('CylinderBounceBack requires zero IBM bodies, groups and solid probes')
+                call parallel_abort('Fixed cylinder requires zero IBM bodies, groups and solid probes')
             endif
-            if (m_nblocks /= 1) call parallel_abort('CylinderBounceBack requires a single fluid block')
-            flow%Asfac = 2.d0*cylinder_radius * (LBMblks(1)%zDim*LBMblks(1)%dh)
+            cylinder_force_block = minloc(LBMblks%dh, dim=1)
+            associate (b => LBMblks(cylinder_force_block))
+                flow%Asfac = 2.d0*cylinder_radius * (b%zDim*b%dh)
+            end associate
         endif
         close(111)
     end subroutine
 
     subroutine initialise_cylinder_boundary()
-        integer :: x, y, q, dx, dy, nlinks, status
+        integer :: iblock, x, y, q, dx, dy, nlinks, status
         integer, parameter :: idfile=111
-        real(8) :: dx_center, dy_center, counts(1)
+        real(8) :: dx_center, dy_center, counts(1), span, clearance, fraction
+        real(8) :: a, bdot, c, rel_x, rel_y
         logical, allocatable :: solid(:,:)
 
         if (.not. cylinder_enabled) return
         if (flow%Uref <= 0.d0 .or. flow%denIn <= 0.d0) then
             call parallel_abort('CylinderBounceBack requires positive reference velocity and inlet density')
         endif
-        associate (b => LBMblks(1))
-            if (b%periodic_bc(3) /= 1) call parallel_abort('CylinderBounceBack requires periodic z faces')
-            if (cylinder_xy(1)-cylinder_radius <= b%global_xmin+b%dh .or. &
-                cylinder_xy(1)+cylinder_radius >= b%global_xmin+(b%global_nx-2)*b%dh .or. &
-                cylinder_xy(2)-cylinder_radius <= b%ymin+b%dh .or. &
-                cylinder_xy(2)+cylinder_radius >= b%ymin+(b%yDim-2)*b%dh) then
-                call parallel_abort('CylinderBounceBack requires a fluid layer between the cylinder and the x/y faces')
-            endif
-            ! Evaluate the same geometry in local cells and in the adjacent MPI x planes.
-            allocate(solid(b%yDim,0:b%xDim+1))
-            do x = 0, b%xDim+1
-                dx_center = b%global_xmin + (b%first_x+x-2)*b%dh - cylinder_xy(1)
-                do y = 1, b%yDim
-                    dy_center = b%ymin + (y-1)*b%dh - cylinder_xy(2)
-                    solid(y,x) = dx_center**2 + dy_center**2 <= cylinder_radius**2
-                enddo
-            enddo
-            allocate(b%cylinder_solid(b%yDim,b%xDim))
-            b%cylinder_solid = solid(:,1:b%xDim)
-            nlinks = 0
-            do q = 1, lbmDim
-                dx = ee(q,1)
-                dy = ee(q,2)
-                nlinks = nlinks + count(.not. solid(2:b%yDim-1,1:b%xDim) .and. &
-                                       solid(2+dy:b%yDim-1+dy,1+dx:b%xDim+dx))
-            enddo
-            counts(1) = dble(nlinks)
-            call sum_values(counts)
-            if (counts(1) == 0.d0) call parallel_abort('CylinderBounceBack has no fluid-solid lattice links')
-            allocate(b%cylinder_links(nlinks), b%cylinder_populations(b%zDim,nlinks))
-            nlinks = 0
-            do q = 1, lbmDim
-                dx = ee(q,1)
-                dy = ee(q,2)
-                do x = 1, b%xDim
-                    do y = 2, b%yDim-1
-                        if (solid(y,x) .or. .not. solid(y+dy,x+dx)) cycle
-                        nlinks = nlinks + 1
-                        b%cylinder_links(nlinks) = BounceLink(x,y,q)
+        span = LBMblks(cylinder_force_block)%zDim*LBMblks(cylinder_force_block)%dh
+        do iblock = 1, m_nblocks
+            associate (b => LBMblks(iblock))
+                if (b%periodic_bc(3) /= 1) call parallel_abort('CylinderBounceBack requires periodic z faces')
+                if (abs(b%zDim*b%dh-span) > 1.d-8*span) then
+                    call parallel_abort('CylinderBounceBack requires the same periodic span in all blocks')
+                endif
+                ! Refinement also samples a plane on either side of each coupling face.
+                clearance = b%dh
+                if (m_nblocks > 1) clearance = 3.d0*b%dh
+                if (cylinder_xy(1)-cylinder_radius <= b%global_xmin+clearance .or. &
+                    cylinder_xy(1)+cylinder_radius >= b%global_xmin+(b%global_nx-1)*b%dh-clearance .or. &
+                    cylinder_xy(2)-cylinder_radius <= b%ymin+clearance .or. &
+                    cylinder_xy(2)+cylinder_radius >= b%ymin+(b%yDim-1)*b%dh-clearance) then
+                    call parallel_abort('CylinderBounceBack requires the cylinder and surrounding fluid inside every block')
+                endif
+                ! Evaluate the same geometry in local cells and in the adjacent MPI x planes.
+                allocate(solid(b%yDim,0:b%xDim+1))
+                do x = 0, b%xDim+1
+                    dx_center = b%global_xmin + (b%first_x+x-2)*b%dh - cylinder_xy(1)
+                    do y = 1, b%yDim
+                        dy_center = b%ymin + (y-1)*b%dh - cylinder_xy(2)
+                        solid(y,x) = dx_center**2 + dy_center**2 <= cylinder_radius**2
                     enddo
                 enddo
-            enddo
-        end associate
+                allocate(b%cylinder_solid(b%yDim,b%xDim))
+                b%cylinder_solid = solid(:,1:b%xDim)
+                nlinks = 0
+                do q = 1, lbmDim
+                    dx = ee(q,1)
+                    dy = ee(q,2)
+                    nlinks = nlinks + count(.not. solid(2:b%yDim-1,1:b%xDim) .and. &
+                                           solid(2+dy:b%yDim-1+dy,1+dx:b%xDim+dx))
+                enddo
+                counts(1) = dble(nlinks)
+                call sum_values(counts)
+                if (counts(1) == 0.d0) call parallel_abort('CylinderBounceBack has no fluid-solid lattice links')
+                allocate(b%cylinder_links(nlinks), b%cylinder_populations(b%zDim,nlinks))
+                if (cylinder_bouzidi) allocate(b%cylinder_reflected(b%zDim,nlinks))
+                nlinks = 0
+                do q = 1, lbmDim
+                    dx = ee(q,1)
+                    dy = ee(q,2)
+                    do x = 1, b%xDim
+                        do y = 2, b%yDim-1
+                            if (solid(y,x) .or. .not. solid(y+dy,x+dx)) cycle
+                            nlinks = nlinks + 1
+                            fraction = 0.5d0
+                            if (cylinder_bouzidi) then
+                                rel_x = b%global_xmin + (b%first_x+x-2)*b%dh - cylinder_xy(1)
+                                rel_y = b%ymin + (y-1)*b%dh - cylinder_xy(2)
+                                ! First intersection of the segment with the circular cross-section.
+                                a = b%dh**2 * (dx*dx + dy*dy)
+                                bdot = b%dh * (rel_x*dx + rel_y*dy)
+                                c = rel_x**2 + rel_y**2 - cylinder_radius**2
+                                fraction = c / (-bdot + sqrt(max(0.d0, bdot**2-a*c)))
+                                if (fraction <= 0.d0 .or. fraction > 1.d0+MachineTolerace) then
+                                    call parallel_abort('Invalid Bouzidi cylinder intersection')
+                                endif
+                                fraction = min(1.d0, fraction)
+                                if (fraction < 0.5d0 .and. solid(y-dy,x-dx)) then
+                                    call parallel_abort('Bouzidi interpolation requires a fluid node behind the link')
+                                endif
+                            endif
+                            b%cylinder_links(nlinks) = BounceLink(x,y,q,fraction)
+                        enddo
+                    enddo
+                enddo
+                deallocate(solid)
+                if (is_root) then
+                    if (cylinder_bouzidi) then
+                        write(*,'(A,I0,A,I0)') 'Cylinder Bouzidi bounce-back, block ', b%ID, ', cross-section links: ', int(counts(1))
+                    else
+                        write(*,'(A,I0,A,I0)') 'Cylinder half-way bounce-back, block ', b%ID, ', cross-section links: ', int(counts(1))
+                    endif
+                endif
+            end associate
+        enddo
         if (is_root) then
-            write(*,'(A,3(1X,ES15.7),A,I0)') 'Cylinder half-way bounce-back (x, y, radius):', &
-                cylinder_xy, cylinder_radius, ', cross-section links: ', int(counts(1))
+            write(*,'(A,I0)') 'Cylinder force block: ', LBMblks(cylinder_force_block)%ID
             if (flow%isConCmpt < 1) then
                 open(idfile, file='./DatInfo/Cylinder_forces.dat', status='replace', iostat=status)
             else
@@ -227,7 +292,7 @@ module FluidDomain
         integer, parameter :: idfile=111
 
         if (.not. cylinder_enabled) return
-        force = LBMblks(1)%cylinder_force
+        force = LBMblks(cylinder_force_block)%cylinder_force
         call sum_values(force)
         if (.not. is_root) return
         open(idfile, file='./DatInfo/Cylinder_forces.dat', status='old', position='append', iostat=status)
@@ -271,7 +336,8 @@ module FluidDomain
         integer function boundary_width(condition, collision_model)
             integer, intent(in) :: condition, collision_model
             boundary_width = 1
-            if (condition == BCnEq_DirecletU .or. condition == BCorder1_Extrapolate) boundary_width = 2
+            if (condition == BCnEq_DirecletU .or. condition == BCorder1_Extrapolate .or. &
+                condition == BCConvectiveOutlet) boundary_width = 2
             if (condition == BCorder2_Extrapolate .or. collision_model == 14 .or. collision_model == 15) boundary_width = 3
         end function
     end subroutine
@@ -872,6 +938,8 @@ module FluidDomain
         integer:: x, y, z
         real(8):: xCoord,yCoord,zCoord,velocity(1:SpaceDim)
         real(8):: fEq(0:lbmDim),fEqi(0:lbmDim),fTmp(0:lbmDim)
+        ! Applied during streaming, so initialization/restart does not advance the outlet in time.
+        if (this%convective_channel) return
         ! set the x direction (inlet) --------------------------------------------------------------------
         if (this%BndConds(1) .eq. BCEq_DirecletU) then
             ! equilibriun scheme
@@ -1378,6 +1446,50 @@ module FluidDomain
         endif
     END SUBROUTINE
 
+    subroutine apply_convective_channel(this)
+        class(LBMBlock), intent(inout) :: this
+        integer :: first, last, x, y, z, ny, inner_y
+        real(8) :: courant, density, interior_density, velocity(3), interior_velocity(3)
+        real(8) :: equilibrium(0:lbmDim), interior_equilibrium(0:lbmDim), interior(0:lbmDim)
+
+        x = this%xDim
+        ny = this%yDim
+        first = 1
+        last = x
+        if (this%BndConds(1) == BCEq_DirecletU) then
+            call calculate_distribution_funcion(flow%denIn, flow%uvwIn, equilibrium)
+            do y = 1, ny
+                do z = 1, this%zDim
+                    this%fIn(z,y,1,:) = equilibrium
+                enddo
+            enddo
+            first = 2
+        endif
+        if (this%BndConds(2) == BCConvectiveOutlet) last = x - 1
+
+        ! Copy the entire state so density and all three velocity components match the inner row.
+        this%fIn(:,1,first:last,:) = this%fIn(:,2,first:last,:)
+        this%fIn(:,ny,first:last,:) = this%fIn(:,ny-1,first:last,:)
+        if (this%BndConds(2) /= BCConvectiveOutlet) return
+
+        ! The lattice time step equals dh. The cached macros are from before collision.
+        courant = flow%uvwIn(1)
+        do y = 1, ny
+            ! At a corner impose the side condition together with the outlet update.
+            inner_y = max(2,min(y,ny-1))
+            do z = 1, this%zDim
+                density = (1.d0-courant)*this%den(z,inner_y,x) + courant*this%den(z,inner_y,x-1)
+                velocity = (1.d0-courant)*this%uuu(z,inner_y,x,:) + courant*this%uuu(z,inner_y,x-1,:)
+                interior = this%fIn(z,inner_y,x-1,:)
+                interior_density = sum(interior)
+                interior_velocity = matmul(interior,ee) / interior_density
+                call calculate_distribution_funcion(density, velocity, equilibrium)
+                call calculate_distribution_funcion(interior_density, interior_velocity, interior_equilibrium)
+                this%fIn(z,y,x,:) = equilibrium + (interior - interior_equilibrium)
+            enddo
+        enddo
+    end subroutine
+
     SUBROUTINE calculate_macro_quantities_(this)
         implicit none
         class(LBMBlock), intent(inout) :: this
@@ -1787,6 +1899,7 @@ module FluidDomain
         implicit none
         class(LBMBlock), intent(inout) :: this
         integer:: i, link, x, y, q
+        real(8) :: fraction, reflected(this%zDim)
         if (cylinder_enabled) then
             ! Save outgoing post-collision populations before the in-place streaming shifts.
             do link = 1, size(this%cylinder_links)
@@ -1794,6 +1907,11 @@ module FluidDomain
                 y = this%cylinder_links(link)%y
                 q = this%cylinder_links(link)%q
                 this%cylinder_populations(:,link) = this%fIn(:,y,x,q)
+                fraction = this%cylinder_links(link)%fraction
+                if (cylinder_bouzidi .and. fraction >= 0.5d0) then
+                    this%cylinder_reflected(:,link) = (this%cylinder_populations(:,link) + &
+                        (2.d0*fraction-1.d0)*this%fIn(:,y,x,oppo(q))) / (2.d0*fraction)
+                endif
             enddo
         endif
         do  i=0,lbmDim
@@ -1818,12 +1936,23 @@ module FluidDomain
                 x = this%cylinder_links(link)%x
                 y = this%cylinder_links(link)%y
                 q = this%cylinder_links(link)%q
-                this%fIn(:,y,x,oppo(q)) = this%cylinder_populations(:,link)
-                this%cylinder_force = this%cylinder_force + sum(this%cylinder_populations(:,link))*ee(q,:)
+                fraction = this%cylinder_links(link)%fraction
+                if (.not. cylinder_bouzidi) then
+                    reflected = this%cylinder_populations(:,link)
+                elseif (fraction < 0.5d0) then
+                    ! Streaming already brought the population from the fluid node behind this link,
+                    ! including through MPI x slabs and the periodic z seam.
+                    reflected = 2.d0*fraction*this%cylinder_populations(:,link) + (1.d0-2.d0*fraction)*this%fIn(:,y,x,q)
+                else
+                    reflected = this%cylinder_reflected(:,link)
+                endif
+                this%fIn(:,y,x,oppo(q)) = reflected
+                this%cylinder_force = this%cylinder_force + sum(this%cylinder_populations(:,link) + reflected)*ee(q,:)
             enddo
             ! Convert the reflected momentum per cell to force using cell volume / time step.
-            this%cylinder_force = this%cylinder_force * (2.d0*this%dh**2)
+            this%cylinder_force = this%cylinder_force * this%dh**2
         endif
+        if (this%convective_channel) call apply_convective_channel(this)
 
         contains
 

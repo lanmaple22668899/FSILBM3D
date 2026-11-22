@@ -30,6 +30,7 @@ module ConstParams
     !   MODULE BoundCondParams
     integer, parameter:: BCEq_DirecletU = 101,BCnEq_DirecletU = 102,BCorder1_Extrapolate = 103,BCorder2_Extrapolate = 104
                         !given balance function,unbalanced extrapolation,1st order extrapolate,2nd order extrapolate
+    integer, parameter:: BCConvectiveOutlet = 105, BCZeroVelocityGradient = 106
     integer, parameter:: BCstationary_Wall = 201, BCmoving_Wall = 202, BCstationary_Wall_halfway = 203, BCmoving_Wall_halfway = 204
     integer, parameter:: BCPeriodic = 301,BCSymmetric = 302,BCfluid = 0,BCfluid_father = 1
 

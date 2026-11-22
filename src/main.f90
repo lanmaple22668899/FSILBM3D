@@ -103,7 +103,7 @@ PROGRAM main
         call get_now_time(time_begine1)
         time = time + dt_fluid
         step = step + 1
-        LBMblks(:)%blktime = time
+        LBMblks(blockTreeRoot)%blktime = time
         if (is_root) write(*,'(A)') '========================================================='
         if (is_root) write(*,'(A,I8,A,F14.8)')' Steps:',step,'  Time/Tref:',time/flow%Tref
         if (is_root) write(*,'(A)')' --------------------- fluid solver ---------------------'
@@ -123,8 +123,10 @@ PROGRAM main
         if (is_root) write(*,'(A)')' ---------------------- write info ----------------------'
         call get_now_time(time_begine2)
         ! write data for continue computing
-        if(DABS(time/flow%Tref-flow%timeContiDelta*dble(NINT(time/flow%Tref/flow%timeContiDelta))) <= 0.5d0*dt_fluid/flow%Tref)then
-            call write_continue_blocks(step,time / flow%Tref)   ! output dimensionless time
+        if (flow%timeContiDelta > 0.d0) then
+            if(DABS(time/flow%Tref-flow%timeContiDelta*dble(NINT(time/flow%Tref/flow%timeContiDelta))) <= 0.5d0*dt_fluid/flow%Tref)then
+                call write_continue_blocks(step,time / flow%Tref)   ! output dimensionless time
+            endif
         endif
         ! write fluid and soild data
         if((time/flow%Tref - flow%timeWriteBegin) >= -0.5d0*dt_fluid/flow%Tref .and. (time/flow%Tref - flow%timeWriteEnd) <= 0.5d0*dt_fluid/flow%Tref) then

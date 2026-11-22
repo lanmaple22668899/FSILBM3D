@@ -1,0 +1,60 @@
+# Three-level Case4 with Yang (2018) inlet, side, outlet and cylinder conditions.
+# Cylinder center: (10,0.01,0); domain: 35D x 25D x 1D (z-periodic).
+Parallel
+16 ! OpenMP threads per MPI rank
+EndParallel
+FlowCondition
+0 1 ! isConCmpt=0: fresh start; numsubstep=1
+500.0D+0 0.0D+0 ! endpoint 500; no checkpoints
+0.0D+0 500.0D+0 ! output interval 0 to 500
+100.0D+0 100.0D+0 0.05D+0 ! timeFlowDelta,timeBodyDelta,timeInfoDelta
+100.0D+0 1.0D+0 ! Re,denIn
+0.10D+0 0.0D+0 0.0D+0 ! uvwIn
+0.0D+0 0.0D+0 0.0D+0 0 ! shearRateIn,velocityKind
+0.0D+0 0.0D+0 0.0D+0 ! volumeForceIn
+0.0D+0 0.0D+0 0.0D+0 ! volumeForceAmp,volumeForceFreq,volumeForcePhi
+1 1.0D+0 ! explicit cylinder diameter Lref
+0 10.0D+0 ! TrefType,Tref
+0 0.10D+0 ! UrefType,Uref
+1 1.0D-4 ! IBM parameters (unused for this case)
+1 ! interpolateScheme
+ENDFlowCondition
+FluidBlocks
+3 ! nblock
+1 1 0 1 ! ID, iCollidModel (SRT), offsetOutput, outputtype
+351 251 10 ! xDim,yDim,zDim
+0.100D+0 -6.000D+0 -12.500D+0 0.000D+0 ! dh,xmin,ymin,zmin
+101 105 106 106 301 301 ! uniform inlet, convective outlet, zero-gradient sides, periodic z
+0 0 0 0 0 0 0 0 0 0 ! params
+=
+2 1 0 1
+381 161 20
+0.050D+0 6.000D+0 -4.000D+0 0.000D+0
+0 0 0 0 301 301
+0 0 0 0 0 0 0 0 0 0
+=
+3 1 0 1
+341 161 40
+0.025D+0 7.500D+0 -2.000D+0 0.000D+0
+0 0 0 0 301 301
+0 0 0 0 0 0 0 0 0 0
+ENDFluidBlocks
+CylinderBouzidi
+10.0 0.01 0.5 ! center_x,center_y,radius
+EndCylinderBouzidi
+SolidBody
+1.0D+0 0.0D+0 ! IBPenaltyalpha,GeoGamma
+0.5D+0 0.25D+0 ! NewmarkGamma,NewmarkBeta
+0.0D+0 0.0D+0 ! dampK,dampM
+1.0D-8 50 ! dtolFEM,ntolFEM
+0 0 1 ! nFish,nfishGroup,isKB
+ENDSolidBody
+ProbingFluid
+4 1 ! fluidProbingNum,inWhichBlock
+1.0D+0 0.05D+0 0.5D+0
+2.0D+0 0.05D+0 0.5D+0
+4.0D+0 0.05D+0 0.5D+0
+8.0D+0 0.05D+0 0.5D+0
+ProbingSolid
+0 ! solidProbingNum
+ENDProbing
