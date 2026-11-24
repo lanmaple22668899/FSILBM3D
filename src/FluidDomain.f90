@@ -373,12 +373,17 @@ module FluidDomain
         enddo
     END SUBROUTINE
 
-    SUBROUTINE initialise_fuild_blocks(time)
+    SUBROUTINE initialise_fuild_blocks(time,root)
         implicit none
         real(8),intent(in):: time
+        integer,intent(in):: root
         integer:: iblock
+        real(8):: y_center,y_width
+
+        y_width = LBMblks(root)%ymax - LBMblks(root)%ymin
+        y_center = LBMblks(root)%ymin + 0.5d0*y_width
         do iblock = 1,m_nblocks
-            call LBMblks(iblock)%initialise(time)
+            call LBMblks(iblock)%initialise(time,y_center,y_width)
         enddo
     END SUBROUTINE
 
@@ -562,10 +567,10 @@ module FluidDomain
         END SUBROUTINE OMPPrePartition
     END SUBROUTINE allocate_fluid_
 
-    SUBROUTINE initialise_(this,time)
+    SUBROUTINE initialise_(this,time,y_center,y_width)
         implicit none
         class(LBMBlock),intent(inout) :: this
-        real(8),intent(in):: time
+        real(8),intent(in):: time,y_center,y_width
         ! select the collision model
         call calculate_SRT_params()
         if(this%iCollidModel.eq.2) then
@@ -655,17 +660,26 @@ module FluidDomain
 
         SUBROUTINE initialise_flow()
             implicit none
-            real(8):: xCoord,yCoord,zCoord
+            real(8):: xCoord,yCoord,zCoord,amplitude,delta_u
             integer:: x, y, z
+
+            amplitude = 0.d0
+            if (flow%isConCmpt == 0) amplitude = flow%uvwIn(1)*flow%initialStreamwiseAmplitude
+            if (amplitude /= 0.d0 .and. y_width <= 0.d0) then
+                call parallel_abort('InitialStreamwisePerturbation requires a positive domain width in y')
+            endif
+            delta_u = 0.d0
             ! calculating initial flow velocity and the distribution function
             do  x = 1, this%xDim
                 xCoord = this%xmin + this%dh * (x - 1);
             do  y = 1, this%yDim
                 yCoord = this%ymin + this%dh * (y - 1);
+                if (amplitude /= 0.d0) delta_u = amplitude*sin(2.d0*pi*(yCoord-y_center)/y_width)
             do  z = 1, this%zDim
                 zCoord = this%zmin + this%dh * (z - 1);
                 this%den(z,y,x) = flow%denIn
                 call evaluate_velocity(this%blktime,zCoord,yCoord,xCoord,flow%uvwIn(1:SpaceDim),this%uuu(z,y,x,1:SpaceDim),flow%shearRateIn(1:3))
+                if (delta_u /= 0.d0) this%uuu(z,y,x,1) = this%uuu(z,y,x,1) + delta_u
                 call calculate_distribution_funcion(this%den(z,y,x),this%uuu(z,y,x,1:SpaceDim),this%fIn(z,y,x,0:lbmDim))
                 if(this%outputtype .ge. 2) then
                     this%uuu_ave(z,y,x,:) = 0.0D0

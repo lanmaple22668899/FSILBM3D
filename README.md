@@ -268,6 +268,19 @@ $PBS_WDIR/$PBS_ENAME
       - 1  : Linear interpolation.
 
       - 2  : Third-(boundary) and fourth-order(inner) mix interpolation.
+
+  20. *InitialStreamwisePerturbation* (optional): Add this line after *interpolateScheme* and before `ENDFlowCondition`:
+
+      ```text
+      InitialStreamwisePerturbation 0.01
+      ```
+
+      The value is the dimensionless amplitude $\alpha$. For a fresh start (`isConCmpt=0`), the solver
+      adds $\alpha\,\mathrm{uvwIn}(1)\sin(2\pi(y-y_c)/H)$ to the initial streamwise velocity before
+      computing the equilibrium populations. $H$ and $y_c$ are the width and midpoint of the outer
+      fluid block in $y$, shared by all refinement levels and MPI ranks. Boundary velocities continue
+      to follow *uvwIn*, *shearRateIn* and *velocityKind*. Restart runs use their saved populations.
+      Omit the line or set the amplitude to zero for the default initial field.
   
 - **FluidBlocks**
 

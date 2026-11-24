@@ -15,6 +15,7 @@ module FlowCondition
         integer :: LrefType,TrefType,UrefType,ntolLBM
         integer :: velocityKind,interpolateScheme
         real(8) :: uvwIn(1:3),shearRateIn(1:3)
+        real(8) :: initialStreamwiseAmplitude = 0.d0
         real(8) :: volumeForceIn(1:3),volumeForceAmp,volumeForceFreq,volumeForcePhi
         real(8) :: Uref,Lref,Tref
         real(8) :: Aref,Fref,Eref,Pref
@@ -24,7 +25,7 @@ module FlowCondition
         real(8), allocatable :: fluidProbingCoords(:,:)
         real(8) :: AmplInitDist(1:3),waveInitDist
     end type FlowCondType
-    type(FlowCondType) :: flow
+    type(FlowCondType), save :: flow
 
     contains
 
@@ -69,12 +70,41 @@ module FlowCondition
         read(buffer,*)    flow%ntolLBM,flow%dtolLBM
         call readNextData(111, buffer)
         read(buffer,*)    flow%interpolateScheme
+        call read_initial_streamwise_amplitude(111)
         close(111)
         ! flow%denIn is not 1
         if(abs(flow%denIn-1.d0).gt.1e-6) then
             write(*,*) 'Warning, denIn is not 1, ', flow%denIn
         endif
     END SUBROUTINE
+
+    SUBROUTINE read_initial_streamwise_amplitude(file_id)
+        use, intrinsic :: ieee_arithmetic, only: ieee_is_finite, ieee_quiet_nan, ieee_value
+        integer, intent(in) :: file_id
+        integer :: status
+        character(len=256) :: line, keyword
+        real(8) :: amplitude
+
+        flow%initialStreamwiseAmplitude = 0.d0
+        do
+            read(file_id,'(a)',iostat=status) line
+            if (status /= 0) return
+            line = adjustl(line)
+            if (len_trim(line) == 0 .or. line(1:1) == '#' .or. line(1:1) == '!') cycle
+            exit
+        enddo
+        read(line,*,iostat=status) keyword
+        if (status /= 0) return
+        if (keyword /= 'InitialStreamwisePerturbation') return
+
+        amplitude = ieee_value(0.d0, ieee_quiet_nan)
+        read(line,*,iostat=status) keyword, amplitude
+        if (status /= 0 .or. .not. ieee_is_finite(amplitude)) then
+            write(*,*) 'InitialStreamwisePerturbation requires a finite amplitude.'
+            stop 1
+        endif
+        flow%initialStreamwiseAmplitude = amplitude
+    END SUBROUTINE read_initial_streamwise_amplitude
 
     SUBROUTINE read_probe_params(filename)
         implicit none

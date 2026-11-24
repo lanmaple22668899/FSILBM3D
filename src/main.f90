@@ -51,7 +51,7 @@ PROGRAM main
     call FindCarrierFluidBlock()
     call distribute_fluid_blocks()
     call allocate_fuild_memory_blocks(flow%npsize)
-    call initialise_fuild_blocks(time)
+    call initialise_fuild_blocks(time,blockTreeRoot)
     !==================================================================================================
     ! Check blocks number and check the tau of each block
     if (is_root) then
